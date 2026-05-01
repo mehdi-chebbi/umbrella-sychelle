@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS users (
 INSERT INTO users (username, password, email, full_name, role)
 VALUES (
   'admin',
-  '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy',
+  '$$2a$10$ZynXK1Bjrtj8rDrGgHyNVe5jCAYBhE3U2LL6HRgfe82qgV.gHbtOy',
   'admin@umbrella.sc',
   'Administrateur',
   'admin'
