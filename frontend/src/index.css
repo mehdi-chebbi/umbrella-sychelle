@@ -1,0 +1,143 @@
+@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;0,600;0,700;1,300;1,400;1,500&family=Inter:wght@300;400;500;600&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    font-family: 'Inter', sans-serif;
+    background: #FAF9F6;
+    color: #3A4A3F;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    overflow-x: hidden;
+  }
+
+  ::selection {
+    background-color: #1B6B5E;
+    color: #FAF9F6;
+  }
+
+  ::-webkit-scrollbar {
+    width: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #D4C9B8;
+    border-radius: 3px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #7D8B7A;
+  }
+}
+
+@layer utilities {
+  /* ─── Subtle paper texture overlay ─── */
+  .paper-texture::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 9999;
+    opacity: 0.025;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='400' height='400'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='400' height='400' filter='url(%23n)' opacity='1'/%3E%3C/svg%3E");
+  }
+
+  /* ─── Manifesto line animation ─── */
+  .manifesto-line {
+    opacity: 0;
+    transform: translateY(24px);
+    transition: all 1s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  .manifesto-line.visible {
+    opacity: 1;
+    transform: translateY(0);
+  }
+
+  /* ─── Reveal animations ─── */
+  .reveal {
+    opacity: 0;
+    transform: translateY(30px);
+    transition: all 0.9s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  .reveal.visible {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  .reveal-delay-1 { transition-delay: 0.1s; }
+  .reveal-delay-2 { transition-delay: 0.2s; }
+  .reveal-delay-3 { transition-delay: 0.3s; }
+  .reveal-delay-4 { transition-delay: 0.4s; }
+  .reveal-delay-5 { transition-delay: 0.5s; }
+  .reveal-delay-6 { transition-delay: 0.6s; }
+
+  /* ─── Hero parallax image ─── */
+  .hero-image {
+    transition: transform 0.1s linear;
+  }
+
+  /* ─── Initiative card hover ─── */
+  .initiative-card:hover .initiative-img {
+    transform: scale(1.05);
+  }
+  .initiative-card:hover .initiative-title {
+    color: #1B6B5E;
+  }
+
+  /* ─── Approach pillar hover ─── */
+  .pillar-card:hover .pillar-img {
+    transform: scale(1.05);
+  }
+  .pillar-card:hover .pillar-label {
+    letter-spacing: 0.2em;
+  }
+
+  /* ─── Tab active state ─── */
+  .scenario-tab.active {
+    color: #1B6B5E;
+    border-bottom-color: #1B6B5E;
+  }
+
+  /* ─── Scroll indicator ─── */
+  @keyframes scrollBounce {
+    0%, 100% { transform: translateY(0); opacity: 0.6; }
+    50% { transform: translateY(8px); opacity: 1; }
+  }
+  .scroll-indicator { animation: scrollBounce 2s ease-in-out infinite; }
+
+  /* ─── Nav link underline ─── */
+  .nav-link::after {
+    content: '';
+    position: absolute;
+    bottom: -2px;
+    left: 0;
+    width: 0;
+    height: 1px;
+    background: #1B6B5E;
+    transition: width 0.3s ease;
+  }
+  .nav-link:hover::after {
+    width: 100%;
+  }
+
+  /* ─── Horizontal rule styling ─── */
+  .divider {
+    height: 1px;
+    background: linear-gradient(to right, transparent, #D4C9B8, transparent);
+  }
+
+  /* ─── Image hover reveal ─── */
+  .img-reveal {
+    transition: transform 700ms cubic-bezier(0.4, 0, 0.2, 1), filter 500ms ease;
+  }
+  .img-reveal:hover {
+    transform: scale(1.05);
+  }
+}
