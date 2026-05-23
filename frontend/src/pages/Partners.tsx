@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import Navbar from '@/components/Navbar';
 import Footer from '@/components/Footer';
 import {
-  DollarSign, Globe, Eye, Building2, Landmark, Handshake, MapPin, Leaf,
+  Building2, Handshake, MapPin, Leaf,
   TreePine, Fish, Waves, ArrowRight, Shield,
 } from 'lucide-react';
 
@@ -42,40 +42,44 @@ const categories: { key: Category; label: string }[] = [
 
 const mainPartners = [
   {
-    icon: DollarSign,
     name: 'FEM',
     fullName: "Fonds pour l'Environnement Mondial",
     role: 'Financement',
     description:
-      "Le FEM finance les projets de protection de la biodiversité dans les pays en développement. Il soutient le programme UMBRELLA à travers plusieurs cycles de financement.",
+      "Le FEM est le mécanisme financier de la Convention. Il finance les projets de lutte contre la dégradation des terres dans les pays en développement.",
     category: 'principal' as Category,
+    logo: 'https://www.thegef.org/themes/custom/geftheme/logo.svg',
+    logoScale: 4,
   },
   {
-    icon: Globe,
     name: 'PNUE',
     fullName: "Programme des Nations Unies pour l'Environnement",
     role: 'Mise en œuvre',
     description:
-      "Le PNUE est l'agence d'exécution du projet, responsable de la coordination globale, du suivi technique et du rapportage auprès des instances internationales.",
+      "Le PNUE est l'agence d'exécution du projet, responsable de la coordination globale et du rapportage auprès des instances internationales.",
     category: 'principal' as Category,
+    logo: 'https://upload.wikimedia.org/wikipedia/commons/d/d0/PNUMA_logo.png',
+    logoScale: 3,
   },
   {
-    icon: Eye,
-    name: 'CNULCD',
-    fullName: 'Convention des Nations Unies sur la Lutte contre la Désertification',
-    role: 'Cadre conventionnel',
+    name: 'OSS',
+    fullName: 'Observatoire du Sahara et du Sahel',
+    role: 'Appui technique',
     description:
-      "La CNULCD fournit le cadre international pour les activités de suivi de la dégradation des terres et la promotion de la neutralité en matière de dégradation des terres (NDT).",
+      "L'OSS assure l'appui technique du projet, apportant son expertise régionale en matière de suivi de la désertification.",
     category: 'principal' as Category,
+    logo: 'https://www.oss-online.org/sites/default/files/logo-h.png',
+    logoScale: 2,
   },
   {
-    icon: Landmark,
-    name: 'Gouvernement SC',
-    fullName: 'Gouvernement des Seychelles',
+    name: 'Min. Environnement',
+    fullName: "Ministry of Environment, Climate, Energy and Natural Resources",
     role: 'Partenaire national',
     description:
-      "Le gouvernement des Seychelles est le point focal national, assurant la coordination inter-institutionnelle et l'intégration des objectifs environnementaux dans les politiques publiques.",
+      "Le Ministère est le point focal national du projet en Tunisie, assurant la coordination inter-institutionnelle.",
     category: 'principal' as Category,
+    logo: 'https://www.green-cooling-initiative.org/fileadmin/user_upload/Seychelles2.png',
+    logoScale: 2,
   },
 ];
 
@@ -235,12 +239,17 @@ export default function Partners() {
 
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
               {mainPartners.map((partner, i) => {
-                const Icon = partner.icon;
+                const maxH = partner.logoScale === 4 ? 'max-h-40' : partner.logoScale === 3 ? 'max-h-28' : 'max-h-20';
+                const maxW = partner.logoScale === 4 ? 'max-w-[280px]' : partner.logoScale === 3 ? 'max-w-[220px]' : 'max-w-[160px]';
                 return (
                   <Reveal key={partner.name} delay={Math.min(i + 1, 4)}>
-                    <div className="group p-8 rounded-2xl border border-wheat/50 bg-cream/30 hover:bg-cream hover:border-sage/30 transition-all duration-500 h-full">
-                      <div className="w-14 h-14 rounded-2xl bg-ocean/[0.07] border border-ocean/10 flex items-center justify-center mb-6 group-hover:bg-ocean/10 group-hover:border-ocean/20 transition-all duration-500">
-                        <Icon size={26} className="text-ocean" strokeWidth={1.5} />
+                    <div className="group p-8 rounded-2xl border border-wheat/50 bg-cream/30 hover:bg-cream hover:border-sage/30 transition-all duration-500 h-full flex flex-col items-center text-center">
+                      <div className="w-full h-44 flex items-center justify-center mb-6">
+                        <img
+                          src={partner.logo}
+                          alt={partner.fullName}
+                          className={`${maxH} ${maxW} object-contain group-hover:scale-105 transition-transform duration-500`}
+                        />
                       </div>
                       <h3 className="font-serif text-xl font-medium text-bark mb-1">{partner.name}</h3>
                       <p className="text-[10px] font-medium uppercase tracking-[0.2em] text-ocean/70 mb-4">{partner.role}</p>
@@ -273,7 +282,7 @@ export default function Partners() {
                 const Icon = inst.icon;
                 return (
                   <Reveal key={inst.name} delay={Math.min(i + 1, 4)}>
-                    <div className="group p-8 rounded-2xl border border-wheat/50 bg-ivory/50 hover:bg-ivory hover:border-sage/30 transition-all duration-500 h-full">
+                    <div className="group p-8 rounded-2xl border border-wheat/50 bg-ivory/50 hover:bg-ivory hover:border-sage/30 transition-all duration-500 h-full flex flex-col items-center text-center">
                       <div className="w-14 h-14 rounded-2xl bg-sage/[0.07] border border-sage/10 flex items-center justify-center mb-6 group-hover:bg-sage/10 group-hover:border-sage/20 transition-all duration-500">
                         <Icon size={26} className="text-sage" strokeWidth={1.5} />
                       </div>
