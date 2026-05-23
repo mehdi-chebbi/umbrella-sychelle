@@ -8,6 +8,10 @@ import { dirname, join } from 'path';
 import { query } from './db/connection.js';
 import authRoutes from './routes/auth.js';
 import userRoutes from './routes/users.js';
+import chatRoutes from './routes/chat.js';
+import layerRoutes from './routes/layers.js';
+import groupRoutes from './routes/groups.js';
+import clipRoutes from './routes/clip.js';
 
 
 const __filename = fileURLToPath(import.meta.url);
@@ -34,6 +38,10 @@ app.use(express.json({ limit: '10mb' }));
 // ─── Routes ─────────────────────────────────────────────────────────────
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
+app.use('/api/chat', chatRoutes);
+app.use('/api/layers', layerRoutes);
+app.use('/api/groups', groupRoutes);
+app.use('/api/clip', clipRoutes);
 // ─── Health Check ───────────────────────────────────────────────────────
 app.get('/api/health', (_req, res) => {
   res.json({

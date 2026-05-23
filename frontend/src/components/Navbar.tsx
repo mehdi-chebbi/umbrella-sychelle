@@ -34,6 +34,7 @@ export default function Navbar() {
     { to: '/', label: 'ACCUEIL' },
     { to: '/a-propos', label: 'À PROPOS' },
     { to: '/partenaires', label: 'PARTENAIRES' },
+    { to: '/geoportail', label: 'GÉOPORTAIL' },
   ];
 
   return (
