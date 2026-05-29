@@ -17,7 +17,7 @@ data:
   DB_PASSWORD: "umbrella_pass"
   JWT_SECRET: "umbrella-jwt-secret-change-in-production"
   JWT_EXPIRES_IN: "24h"
-  OPENROUTER_API_KEY: "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"
+  OPENROUTER_API_KEY: "aaaa"
   OPENROUTER_MODEL: "qwen/qwen3-235b-a22b-2507"
   PORT: "4000"
   GEOSERVER_REST_URL: "http://geoserver:8080/geoserver/rest"
