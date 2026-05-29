@@ -1,72 +1,99 @@
----
+# ─── PVC ────────────────────────────────────────────────────────
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: db-pvc
-  namespace: umbrella
+  name: pgdata-pvc
+  namespace: sych-umb
 spec:
   accessModes:
     - ReadWriteOnce
   resources:
     requests:
-      storage: 1Gi
+      storage: 5Gi
+  storageClassName: longhorn
 
 ---
+# ─── Deployment ─────────────────────────────────────────────────
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: db
-  namespace: umbrella
+  namespace: sych-umb
 spec:
   replicas: 1
   selector:
     matchLabels:
       app: db
+  strategy:
+    type: Recreate
   template:
     metadata:
       labels:
         app: db
     spec:
+      nodeName: worker-04
       containers:
-        - name: postgres
-          image: postgres:16-alpine
+        - name: db
+          image: postgis/postgis:15-3.3-alpine
           ports:
             - containerPort: 5432
-          envFrom:
-            - configMapRef:
-                name: umbrella-config
+          env:
+            - name: POSTGRES_DB
+              valueFrom:
+                configMapKeyRef:
+                  name: umbrella-config
+                  key: POSTGRES_DB
+            - name: POSTGRES_USER
+              valueFrom:
+                configMapKeyRef:
+                  name: umbrella-config
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                configMapKeyRef:
+                  name: umbrella-config
+                  key: POSTGRES_PASSWORD
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
           volumeMounts:
-            - name: db-data
+            - name: pgdata
               mountPath: /var/lib/postgresql/data
-          resources:
-            requests:
-              memory: "128Mi"
-              cpu: "100m"
-            limits:
-              memory: "256Mi"
-              cpu: "500m"
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - pg_isready -U umbrella_user -d umbrella
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 5
           readinessProbe:
             exec:
-              command: ["pg_isready", "-U", "umbrella_user", "-d", "umbrella"]
+              command:
+                - sh
+                - -c
+                - pg_isready -U umbrella_user -d umbrella
             initialDelaySeconds: 5
             periodSeconds: 5
             timeoutSeconds: 5
             failureThreshold: 5
       volumes:
-        - name: db-data
+        - name: pgdata
           persistentVolumeClaim:
-            claimName: db-pvc
+            claimName: pgdata-pvc
 
 ---
+# ─── Service ────────────────────────────────────────────────────
 apiVersion: v1
 kind: Service
 metadata:
   name: db
-  namespace: umbrella
+  namespace: sych-umb
 spec:
   selector:
     app: db
   ports:
     - port: 5432
       targetPort: 5432
-  type: ClusterIP
+  clusterIP: None
