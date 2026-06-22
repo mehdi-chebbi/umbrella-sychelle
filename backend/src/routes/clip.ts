@@ -133,6 +133,55 @@ async function fetchLayersFromGeoServer(): Promise<any[]> {
   }
 }
 
+// ─── Compute bbox from a GeoJSON file ───────────────────────────────────
+// Returns [west, south, east, north] or null if file cannot be parsed.
+function computeGeojsonBbox(filePath: string): [number, number, number, number] | null {
+  try {
+    if (!fs.existsSync(filePath)) return null;
+    const raw = fs.readFileSync(filePath, 'utf-8');
+    const data = JSON.parse(raw);
+
+    // Collect all geometries (Feature, FeatureCollection, or bare geometry)
+    const geometries: any[] = [];
+    if (data.type === 'FeatureCollection') {
+      for (const f of data.features || []) {
+        if (f.geometry) geometries.push(f.geometry);
+      }
+    } else if (data.type === 'Feature') {
+      if (data.geometry) geometries.push(data.geometry);
+    } else if (data.type) {
+      geometries.push(data);
+    }
+
+    let west = Infinity, south = Infinity, east = -Infinity, north = -Infinity;
+    let found = false;
+
+    const walk = (coords: any) => {
+      if (typeof coords[0] === 'number' && typeof coords[1] === 'number') {
+        const [lng, lat] = coords;
+        if (lng < west) west = lng;
+        if (lat < south) south = lat;
+        if (lng > east) east = lng;
+        if (lat > north) north = lat;
+        found = true;
+        return;
+      }
+      for (const c of coords) walk(c);
+    };
+
+    for (const geom of geometries) {
+      if (!geom.coordinates) continue;
+      walk(geom.coordinates);
+    }
+
+    if (!found) return null;
+    return [west, south, east, north];
+  } catch (e) {
+    console.error(`[Bbox] Failed to compute bbox for ${filePath}:`, (e as Error).message);
+    return null;
+  }
+}
+
 // ─── Build nested group structure ───────────────────────────────────────
 function buildGroupTree(groups: any[], layers: any[]): any[] {
   const groupMap: { [key: number]: any } = {};
@@ -272,15 +321,21 @@ router.post('/layers/sync', authMiddleware, adminOnly, async (req: Request, res:
 });
 
 // ─── POST /api/clip/stats — Get stats for a polygon area ───────────────
+// Body: { layer_name, polygon, clippedLayerName? }
+// - If clippedLayerName is provided, stats are computed on the clipped tiff
+//   (path reconstructed from clipped_layers_cache + layers.geoserver_name).
+//   Class labels are inherited from the source layer.
+// - Otherwise, existing behavior (stats on source layer.file_path).
 router.post('/stats', async (req: Request, res: Response): Promise<void> => {
   try {
-    const { layer_name, polygon } = req.body;
+    const { layer_name, polygon, clippedLayerName } = req.body;
 
     if (!layer_name || !polygon) {
       res.status(400).json({ error: 'layer_name et polygon sont requis' });
       return;
     }
 
+    // Resolve the source layer (always needed for class_labels)
     const result = await query(
       'SELECT * FROM layers WHERE geoserver_name = $1',
       [layer_name]
@@ -292,20 +347,62 @@ router.post('/stats', async (req: Request, res: Response): Promise<void> => {
     }
 
     const layer = result.rows[0];
-    const filePath = layer.file_path;
     const classLabels = layer.class_labels;
-
-    if (!filePath) {
-      res.status(400).json({ error: 'Couche non configurée pour les statistiques (file_path manquant)' });
-      return;
-    }
 
     if (!classLabels) {
       res.status(400).json({ error: 'Couche non configurée pour les statistiques (class_labels manquant)' });
       return;
     }
 
-    console.log(`[Stats] Calling clip-service for layer: ${layer_name}`);
+    // Determine which raster path to send to clip-service
+    let rasterPath: string;
+    let statsLayerLabel = layer_name;
+
+    if (clippedLayerName) {
+      // Clipped view: look up the cache entry to find the layer_id,
+      // then reconstruct the tiff path on the clip-service container.
+      const clipResult = await query(
+        'SELECT layer_id FROM clipped_layers_cache WHERE clipped_layer_name = $1',
+        [clippedLayerName]
+      );
+
+      if (clipResult.rows.length === 0) {
+        res.status(404).json({ error: 'Couche découpée non trouvée dans le cache' });
+        return;
+      }
+
+      // Verify the cache entry belongs to this source layer
+      const clipLayerId = clipResult.rows[0].layer_id;
+      if (clipLayerId !== layer.id) {
+        res.status(400).json({ error: 'La couche découpée ne correspond pas à la couche source' });
+        return;
+      }
+
+      // Reconstruct path: /data/clipped-rasters/{source_layerName}/{output_layer_id}.tif
+      // where source_layerName is the part after ':' in geoserver_name
+      // and output_layer_id is the part after ':' in clippedLayerName
+      const colonIdx = clippedLayerName.indexOf(':');
+      const outputLayerId = colonIdx !== -1 ? clippedLayerName.substring(colonIdx + 1) : clippedLayerName;
+
+      const srcColonIdx = layer.geoserver_name.indexOf(':');
+      const sourceLayerName = srcColonIdx !== -1 ? layer.geoserver_name.substring(srcColonIdx + 1) : layer.geoserver_name;
+
+      const OUTPUT_DIR = process.env.CLIP_OUTPUT_DIR || '/data/clipped-rasters';
+      rasterPath = `${OUTPUT_DIR}/${sourceLayerName}/${outputLayerId}.tif`;
+      statsLayerLabel = clippedLayerName;
+
+      console.log(`[Stats] Clipped mode: ${clippedLayerName} → raster_path: ${rasterPath}`);
+    } else {
+      // Source view: use the source layer's file_path
+      const filePath = layer.file_path;
+      if (!filePath) {
+        res.status(400).json({ error: 'Couche non configurée pour les statistiques (file_path manquant)' });
+        return;
+      }
+      rasterPath = filePath;
+    }
+
+    console.log(`[Stats] Calling clip-service for layer: ${statsLayerLabel}`);
 
     const STATS_TIMEOUT = 10 * 60 * 1000;
     const controller = new AbortController();
@@ -315,7 +412,7 @@ router.post('/stats', async (req: Request, res: Response): Promise<void> => {
       const response = await fetch(`${CLIP_SERVICE_URL}/stats`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ raster_path: filePath, polygon }),
+        body: JSON.stringify({ raster_path: rasterPath, polygon }),
         signal: controller.signal
       });
 
@@ -341,7 +438,7 @@ router.post('/stats', async (req: Request, res: Response): Promise<void> => {
       console.log(`[Stats] Success: ${classesWithPercentage.length} classes, ${stats.total_area_km2} km2 total`);
 
       res.json({
-        layer_name,
+        layer_name: statsLayerLabel,
         total_area_km2: stats.total_area_km2,
         pixel_size_m: stats.pixel_size_m,
         classes: classesWithPercentage
@@ -360,6 +457,58 @@ router.post('/stats', async (req: Request, res: Response): Promise<void> => {
   } catch (error: any) {
     console.error('[Stats] Error:', error);
     res.status(500).json({ error: 'Erreur interne du serveur' });
+  }
+});
+
+// GET /api/clip/layer/:id/clips — public endpoint
+// Returns only the regions that have been clipped for this layer,
+// along with the GeoServer clipped layer name and the geojson bbox for auto-zoom.
+router.get('/layer/:id/clips', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const layerId = parseInt(String(req.params.id), 10);
+    if (Number.isNaN(layerId)) {
+      res.status(400).json({ error: 'ID de couche invalide' });
+      return;
+    }
+
+    // Join with layers table to get the source geoserver_name so we can build
+    // the downloadUrl. Files live at /data/clipped-rasters/{source_layerName}/{outputFileId}.tif
+    const result = await query(
+      `SELECT c.country_file, c.clipped_layer_name, l.geoserver_name
+       FROM clipped_layers_cache c
+       JOIN layers l ON l.id = c.layer_id
+       WHERE c.layer_id = $1
+       ORDER BY c.country_file ASC`,
+      [layerId]
+    );
+
+    const geojsonDir = process.env.GEOJSON_DIR || './geojson';
+
+    const clips = result.rows.map((r: any) => {
+      const country = r.country_file.replace('.geojson', '');
+      const geojsonPath = path.join(geojsonDir, r.country_file);
+      const bbox = computeGeojsonBbox(geojsonPath);
+      // Build downloadUrl for the clipped .tif file.
+      // Path pattern: /files/{source_layerName}/{outputFileId}.tif
+      const sourceLayerName = r.geoserver_name.includes(':')
+        ? r.geoserver_name.split(':')[1]
+        : r.geoserver_name;
+      const outputFileId = r.clipped_layer_name.includes(':')
+        ? r.clipped_layer_name.split(':')[1]
+        : r.clipped_layer_name;
+      const downloadUrl = `/files/${sourceLayerName}/${outputFileId}.tif`;
+      return {
+        country,
+        clippedLayerName: r.clipped_layer_name,
+        bbox, // [west, south, east, north] or null
+        downloadUrl,
+      };
+    });
+
+    res.json({ layerId, clips });
+  } catch (error: any) {
+    console.error('[Clips List] Error:', error);
+    res.status(500).json({ error: 'Échec de récupération des découpages', message: error.message });
   }
 });
 

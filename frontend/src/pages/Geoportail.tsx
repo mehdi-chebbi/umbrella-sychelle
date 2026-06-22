@@ -1,9 +1,11 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { ChevronDown, ChevronRight, Map, Satellite, PenTool, X, BarChart3, Loader2 } from 'lucide-react';
+import { ChevronDown, ChevronRight, Map, Satellite, PenTool, X, BarChart3, Loader2, Globe2, Download, FileDown, Image as ImageIcon } from 'lucide-react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import 'leaflet-draw/dist/leaflet.draw.css';
 import 'leaflet-draw';
+import 'leaflet-side-by-side';
+import leafletImage from 'leaflet-image';
 import Navbar from '@/components/Navbar';
 import api from '@/services/api';
 
@@ -52,6 +54,13 @@ interface StatsResult {
   classes: StatClass[];
 }
 
+interface ClipInfo {
+  country: string;
+  clippedLayerName: string;
+  bbox: [number, number, number, number] | null; // [west, south, east, north]
+  downloadUrl?: string; // path to clipped .tif file, e.g. /files/{layer}/{id}.tif
+}
+
 const WMS_BASE = '/api/clip/wms';
 
 type BaseMap = 'satellite' | 'osm';
@@ -59,11 +68,11 @@ type BaseMap = 'satellite' | 'osm';
 const BASE_MAPS: Record<BaseMap, { url: string; opts: L.TileLayerOptions }> = {
   satellite: {
     url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-    opts: { maxZoom: 19, attribution: '&copy; Esri' },
+    opts: { maxZoom: 19, attribution: '&copy; Esri', crossOrigin: 'anonymous' },
   },
   osm: {
     url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
-    opts: { maxZoom: 19, attribution: '&copy; OpenStreetMap' },
+    opts: { maxZoom: 19, attribution: '&copy; OpenStreetMap', crossOrigin: 'anonymous' },
   },
 };
 
@@ -76,6 +85,10 @@ export default function Geoportail() {
   const activeWmsRef = useRef<L.TileLayer.WMS | null>(null);
   const activeLayerRef = useRef<LayerDef | null>(null);
   const drawnItemsRef = useRef<L.FeatureGroup | null>(null);
+  const selectedClipRef = useRef<string | null>(null); // mirror of selectedClip for use in draw handler
+  const compareLeftLayerRef = useRef<L.TileLayer.WMS | null>(null);
+  const compareRightLayerRef = useRef<L.TileLayer.WMS | null>(null);
+  const compareControlRef = useRef<L.Control.SideBySide | null>(null);
 
   const [baseMap, setBaseMap] = useState<BaseMap>('satellite');
   const [activeLayerId, setActiveLayerId] = useState<number | null>(null);
@@ -88,13 +101,45 @@ export default function Geoportail() {
   const [statsResult, setStatsResult] = useState<StatsResult | null>(null);
   const [statsLoading, setStatsLoading] = useState(false);
   const [statsError, setStatsError] = useState('');
+
+  // Clips (per-region clipped layers) for the active source layer
+  const [clips, setClips] = useState<ClipInfo[]>([]);
+  const [clipsLoading, setClipsLoading] = useState(false);
+  const [selectedClip, setSelectedClip] = useState<string | null>(null); // null = full extent
   // Sidebar is always visible (floating, non-collapsible)
+
+  // Compare mode state
+  const [isCompareMode, setIsCompareMode] = useState(false);
+  const [showComparePicker, setShowComparePicker] = useState(false);
+  const [leftLayerId, setLeftLayerId] = useState<number | null>(null);
+  const [rightLayerId, setRightLayerId] = useState<number | null>(null);
+
+  // Export state
+  const [isExporting, setIsExporting] = useState(false);
+  const [showExportMenu, setShowExportMenu] = useState(false);
+  const exportMenuRef = useRef<HTMLDivElement>(null);
 
   const activeLayer = activeLayerId
     ? [...ungroupedLayers, ...getAllLayers(groups)].find(l => l.id === activeLayerId) || null
     : null;
 
   const activeLegend = activeLayer?.legend || activeLayer?.group_legend || null;
+
+  // TIFF download URL for the currently selected clip (if any)
+  const activeClipDownloadUrl = selectedClip
+    ? clips.find(c => c.clippedLayerName === selectedClip)?.downloadUrl ?? null
+    : null;
+
+  const allLayersFlat = [...ungroupedLayers, ...getAllLayers(groups)];
+  const leftLayer = leftLayerId ? allLayersFlat.find(l => l.id === leftLayerId) || null : null;
+  const rightLayer = rightLayerId ? allLayersFlat.find(l => l.id === rightLayerId) || null : null;
+  const leftLegend = leftLayer?.legend || leftLayer?.group_legend || null;
+  const rightLegend = rightLayer?.legend || rightLayer?.group_legend || null;
+
+  // Keep selectedClipRef in sync with selectedClip state (for use in draw handler)
+  useEffect(() => {
+    selectedClipRef.current = selectedClip;
+  }, [selectedClip]);
 
   /* Helper: flatten all layers from nested groups */
   function getAllLayers(groups: LayerGroup[]): LayerDef[] {
@@ -103,6 +148,21 @@ export default function Geoportail() {
       result.push(...g.layers);
       if (g.children.length > 0) result.push(...getAllLayers(g.children));
     }
+    return result;
+  }
+
+  /* Helper: flatten layers with their group path for the compare picker */
+  function flattenLayersWithPath(groupList: LayerGroup[], ungrouped: LayerDef[]): { layer: LayerDef; path: string }[] {
+    const result: { layer: LayerDef; path: string }[] = [];
+    const walk = (gl: LayerGroup[], parentPath = '') => {
+      for (const g of gl) {
+        const currentPath = parentPath ? `${parentPath} › ${g.name}` : g.name;
+        for (const l of g.layers) result.push({ layer: l, path: currentPath });
+        if (g.children.length > 0) walk(g.children, currentPath);
+      }
+    };
+    walk(groupList);
+    for (const l of ungrouped) result.push({ layer: l, path: 'Autres' });
     return result;
   }
 
@@ -184,24 +244,101 @@ export default function Geoportail() {
     setIsDrawing(false);
   }, []);
 
+  /* Exit compare mode */
+  const exitCompare = useCallback(() => {
+    if (!mapRef.current) return;
+    if (compareControlRef.current) {
+      compareControlRef.current.remove();
+      compareControlRef.current = null;
+    }
+    if (compareLeftLayerRef.current) {
+      mapRef.current.removeLayer(compareLeftLayerRef.current);
+      compareLeftLayerRef.current = null;
+    }
+    if (compareRightLayerRef.current) {
+      mapRef.current.removeLayer(compareRightLayerRef.current);
+      compareRightLayerRef.current = null;
+    }
+    setIsCompareMode(false);
+    setLeftLayerId(null);
+    setRightLayerId(null);
+  }, []);
+
+  /* Start compare mode with two layers side by side */
+  const startCompare = useCallback(() => {
+    const leftL = [...ungroupedLayers, ...getAllLayers(groups)].find(l => l.id === leftLayerId);
+    const rightL = [...ungroupedLayers, ...getAllLayers(groups)].find(l => l.id === rightLayerId);
+    if (!leftL || !rightL || !mapRef.current) return;
+    if (leftL.id === rightL.id) return;
+
+    // Remove active single-layer WMS if any
+    if (activeWmsRef.current) {
+      mapRef.current.removeLayer(activeWmsRef.current);
+      activeWmsRef.current = null;
+    }
+    activeLayerRef.current = null;
+    setActiveLayerId(null);
+    setSelectedClip(null);
+    setStatsResult(null);
+    setStatsError('');
+    drawnItemsRef.current?.clearLayers();
+    cancelDrawing();
+
+    // Remove any existing compare layers
+    if (compareLeftLayerRef.current) mapRef.current.removeLayer(compareLeftLayerRef.current);
+    if (compareRightLayerRef.current) mapRef.current.removeLayer(compareRightLayerRef.current);
+    if (compareControlRef.current) compareControlRef.current.remove();
+
+    const leftWMS = L.tileLayer.wms(leftL.wmsUrl, {
+      layers: leftL.layerName,
+      format: 'image/png',
+      transparent: true,
+      crossOrigin: 'anonymous',
+    }).addTo(mapRef.current);
+
+    const rightWMS = L.tileLayer.wms(rightL.wmsUrl, {
+      layers: rightL.layerName,
+      format: 'image/png',
+      transparent: true,
+      crossOrigin: 'anonymous',
+    }).addTo(mapRef.current);
+
+    compareLeftLayerRef.current = leftWMS;
+    compareRightLayerRef.current = rightWMS;
+    compareControlRef.current = L.control.sideBySide(leftWMS, rightWMS).addTo(mapRef.current);
+
+    setIsCompareMode(true);
+    setShowComparePicker(false);
+  }, [leftLayerId, rightLayerId, groups, ungroupedLayers, cancelDrawing]);
+
   /* Select a layer */
   const selectLayer = useCallback((layer: LayerDef) => {
     // Cancel any active drawing when switching layers
     cancelDrawing();
+    // Exit compare mode if active
+    if (isCompareMode) exitCompare();
 
     if (activeLayerRef.current?.id === layer.id) {
+      // Toggle off
       if (activeWmsRef.current && mapRef.current) {
         mapRef.current.removeLayer(activeWmsRef.current);
       }
       activeWmsRef.current = null;
       activeLayerRef.current = null;
       setActiveLayerId(null);
+      // Clear clips state when no layer is active
+      setClips([]);
+      setSelectedClip(null);
       return;
     }
 
     if (activeWmsRef.current && mapRef.current) {
       mapRef.current.removeLayer(activeWmsRef.current);
     }
+
+    // Reset clip selection on layer switch (new layer may not have this region clipped).
+    // Zoom is intentionally NOT changed per requirement.
+    setSelectedClip(null);
 
     const wms = L.tileLayer.wms(layer.wmsUrl, {
       layers: layer.layerName,
@@ -214,7 +351,72 @@ export default function Geoportail() {
     activeWmsRef.current = wms;
     activeLayerRef.current = layer;
     setActiveLayerId(layer.id);
-  }, [layerOpacity, cancelDrawing]);
+  }, [layerOpacity, cancelDrawing, isCompareMode, exitCompare]);
+
+  /* Fetch clipped layers for the active source layer */
+  useEffect(() => {
+    if (!activeLayerId) {
+      setClips([]);
+      setSelectedClip(null);
+      return;
+    }
+    let cancelled = false;
+    setClipsLoading(true);
+    api.get(`/clip/layer/${activeLayerId}/clips`)
+      .then(res => {
+        if (cancelled) return;
+        setClips(res.data.clips || []);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setClips([]);
+      })
+      .finally(() => {
+        if (!cancelled) setClipsLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [activeLayerId]);
+
+  /* Select a clipped region (or null for full extent) */
+  const handleSelectClip = useCallback((clipName: string | null) => {
+    const layer = activeLayerRef.current;
+    const map = mapRef.current;
+    if (!layer || !map) return;
+
+    // Remove current WMS layer
+    if (activeWmsRef.current) {
+      map.removeLayer(activeWmsRef.current);
+    }
+
+    // Determine which WMS layer name to use
+    const wmsLayerName = clipName ?? layer.layerName;
+
+    const wms = L.tileLayer.wms(layer.wmsUrl, {
+      layers: wmsLayerName,
+      format: 'image/png',
+      transparent: true,
+      crossOrigin: 'anonymous',
+      opacity: layerOpacity,
+    });
+    wms.addTo(map);
+    activeWmsRef.current = wms;
+    setSelectedClip(clipName);
+
+    // Auto-zoom to region bbox when a clip is selected (NOT on reset)
+    if (clipName) {
+      const clip = clips.find(c => c.clippedLayerName === clipName);
+      if (clip?.bbox) {
+        const [west, south, east, north] = clip.bbox;
+        // Leaflet fitBounds expects [[south, west], [north, east]]
+        map.fitBounds([[south, west], [north, east]], { padding: [30, 30] });
+      }
+    }
+
+    // Clear any previous stats when switching extent
+    drawnItemsRef.current?.clearLayers();
+    setStatsResult(null);
+    setStatsError('');
+  }, [layerOpacity, clips]);
 
   /* Change opacity */
   const changeOpacity = useCallback((value: number) => {
@@ -302,7 +504,9 @@ export default function Geoportail() {
       try {
         const response = await api.post('/clip/stats', {
           layer_name: activeL.geoserver_name,
-          polygon
+          polygon,
+          // If a clipped region is currently displayed, compute stats on the clipped tiff.
+          clippedLayerName: selectedClipRef.current ?? undefined,
         });
         setStatsResult(response.data);
       } catch (err: any) {
@@ -324,6 +528,38 @@ export default function Geoportail() {
     drawnItemsRef.current?.clearLayers();
     setStatsResult(null);
     setStatsError('');
+  }, []);
+
+  /* Close export menu on outside click */
+  useEffect(() => {
+    if (!showExportMenu) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (exportMenuRef.current && !exportMenuRef.current.contains(e.target as Node)) {
+        setShowExportMenu(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [showExportMenu]);
+
+  /* Export current map view as JPEG using leaflet-image */
+  const handleExportJPEG = useCallback(() => {
+    if (!mapRef.current) return;
+    setShowExportMenu(false);
+    setIsExporting(true);
+    leafletImage(mapRef.current, (err: Error | null, canvas: HTMLCanvasElement) => {
+      if (err) {
+        console.error('Export failed:', err);
+        setIsExporting(false);
+        return;
+      }
+      const link = document.createElement('a');
+      const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+      link.download = `geoportail-export-${ts}.jpg`;
+      link.href = canvas.toDataURL('image/jpeg', 0.92);
+      link.click();
+      setIsExporting(false);
+    });
   }, []);
 
   /* ─── Render groups recursively ─── */
@@ -402,6 +638,55 @@ export default function Geoportail() {
           </div>
         )}
 
+        {/* ─── Étendue panel (per-region clipped view) ───
+            Floating to the right of the sidebar. Only shown when a layer is active
+            and either loading clips or has at least one clip available. */}
+        {activeLayerId && (clipsLoading || clips.length > 0) && (
+          <div className="absolute top-20 left-80 z-[997]">
+            <div className="bg-umbrella-dark/90 backdrop-blur-xl rounded-2xl shadow-2xl border border-white/10 overflow-hidden">
+              <div className="px-4 py-3 border-b border-white/10">
+                <div className="flex items-center gap-2">
+                  <Globe2 size={13} className="text-umbrella-accent" />
+                  <p className="text-[9px] font-bold uppercase tracking-[0.2em] text-white/40">Étendue</p>
+                </div>
+              </div>
+              <div className="p-3">
+                {clipsLoading ? (
+                  <div className="flex items-center gap-2 py-1.5">
+                    <Loader2 className="w-3.5 h-3.5 animate-spin text-umbrella-accent" />
+                    <span className="text-[11px] text-white/50">Chargement…</span>
+                  </div>
+                ) : (
+                  <select
+                    value={selectedClip ?? ''}
+                    onChange={e => handleSelectClip(e.target.value === '' ? null : e.target.value)}
+                    className="w-full bg-white/5 text-white text-[12px] font-medium rounded-lg px-3 py-2 border border-white/10 focus:outline-none focus:ring-2 focus:ring-umbrella-accent/40 focus:border-transparent cursor-pointer appearance-none"
+                    style={{
+                      backgroundImage: "url(\"data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23ffffff80' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E\")",
+                      backgroundRepeat: 'no-repeat',
+                      backgroundPosition: 'right 0.6rem center',
+                      backgroundSize: '0.9rem',
+                      paddingRight: '2rem',
+                    }}
+                  >
+                    <option value="" className="bg-umbrella-dark text-white">Seychelles (total)</option>
+                    {clips.map(clip => (
+                      <option key={clip.clippedLayerName} value={clip.clippedLayerName} className="bg-umbrella-dark text-white">
+                        {clip.country}
+                      </option>
+                    ))}
+                  </select>
+                )}
+                {selectedClip && (
+                  <p className="mt-2 text-[10px] text-white/35 leading-snug">
+                    Vue par région · zoom auto-ajusté
+                  </p>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* ─── Stats Panel ─── */}
         {(statsLoading || statsResult || statsError) && (
           <div className="absolute top-20 right-4 z-[998] bg-white rounded-xl shadow-2xl border border-umbrella-border max-w-sm w-full overflow-hidden">
@@ -455,6 +740,165 @@ export default function Geoportail() {
                 </div>
               </div>
             )}
+          </div>
+        )}
+
+        {/* ─── Compare + Export buttons (top center) ─── */}
+        <div className="absolute top-20 left-1/2 -translate-x-1/2 z-[997] flex items-center gap-2">
+          {!isCompareMode && !isDrawing && (
+            <button
+              onClick={() => setShowComparePicker(true)}
+              className="bg-umbrella-dark/90 hover:bg-umbrella-dark text-white text-sm font-medium px-4 py-2 rounded-xl shadow-2xl border border-white/10 flex items-center gap-2 transition"
+            >
+              <span className="text-lg leading-none">⇔</span>
+              Comparer
+            </button>
+          )}
+
+          {/* Export dropdown */}
+          <div className="relative" ref={exportMenuRef}>
+            <button
+              onClick={() => setShowExportMenu(!showExportMenu)}
+              disabled={isExporting}
+              className="bg-umbrella-dark/90 hover:bg-umbrella-dark text-white text-sm font-medium px-4 py-2 rounded-xl shadow-2xl border border-white/10 flex items-center gap-2 transition disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {isExporting ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Download size={15} />
+              )}
+              {isExporting ? 'Export…' : 'Exporter'}
+              <ChevronDown size={13} className={`transition-transform ${showExportMenu ? 'rotate-180' : ''}`} />
+            </button>
+            {showExportMenu && (
+              <div className="absolute top-full right-0 mt-1 w-48 bg-umbrella-dark/95 backdrop-blur-xl rounded-xl shadow-2xl border border-white/10 overflow-hidden">
+                <button
+                  onClick={handleExportJPEG}
+                  disabled={isExporting}
+                  className="w-full text-left px-4 py-2.5 text-sm text-white/80 hover:bg-white/5 flex items-center gap-2.5 transition disabled:opacity-50"
+                >
+                  <ImageIcon size={15} className="text-white/50" />
+                  JPEG (carte)
+                </button>
+                <button
+                  onClick={() => {
+                    setShowExportMenu(false);
+                    if (activeClipDownloadUrl) {
+                      window.open(activeClipDownloadUrl, '_blank');
+                    }
+                  }}
+                  disabled={!activeClipDownloadUrl}
+                  className={`w-full text-left px-4 py-2.5 text-sm flex items-center gap-2.5 border-t border-white/5 transition ${
+                    activeClipDownloadUrl
+                      ? 'text-white/80 hover:bg-white/5 cursor-pointer'
+                      : 'text-white/25 cursor-not-allowed'
+                  }`}
+                  title={!activeClipDownloadUrl ? 'Sélectionnez une région découpée pour télécharger le raster .tif' : 'Télécharger le raster .tif de la zone affichée'}
+                >
+                  <FileDown size={15} className={activeClipDownloadUrl ? 'text-white/50' : 'text-white/20'} />
+                  TIFF (raster)
+                  {!activeClipDownloadUrl && <span className="ml-auto text-[10px] opacity-60">🔒</span>}
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {isCompareMode && (
+          <div className="absolute top-32 left-1/2 -translate-x-1/2 z-[1000] bg-umbrella-dark/90 backdrop-blur-xl text-white text-sm font-medium px-4 py-2 rounded-xl shadow-2xl border border-white/10 flex items-center gap-4 max-w-[90vw]">
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="text-white/40 text-xs shrink-0">G:</span>
+              <span className="break-words truncate">{leftLayer?.name || '—'}</span>
+            </div>
+            <span className="text-white/20 shrink-0">|</span>
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="text-white/40 text-xs shrink-0">D:</span>
+              <span className="break-words truncate">{rightLayer?.name || '—'}</span>
+            </div>
+            <button onClick={exitCompare} className="bg-white/10 text-white px-2 py-0.5 rounded text-xs font-semibold hover:bg-white/20 transition shrink-0 ml-2">
+              Quitter
+            </button>
+          </div>
+        )}
+
+        {/* Compare legends */}
+        {isCompareMode && leftLegend && leftLegend.length > 0 && (
+          <div className="absolute bottom-6 left-80 z-[998] bg-umbrella-dark/90 backdrop-blur-md rounded-lg shadow-xl p-3 min-w-[160px]">
+            <p className="text-[8px] font-bold uppercase tracking-[0.15em] text-white/40 mb-2">Légende G</p>
+            <div className="space-y-1">
+              {leftLegend.map((item, i) => (
+                <div key={i} className="flex items-center gap-2">
+                  <span className="w-3 h-3 rounded-sm shrink-0 border border-white/10" style={{ backgroundColor: item.color }} />
+                  <span className="text-[10px] text-white/70 leading-none">{getLegendLabel(item)}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+        {isCompareMode && rightLegend && rightLegend.length > 0 && (
+          <div className="absolute bottom-6 right-6 z-[998] bg-umbrella-dark/90 backdrop-blur-md rounded-lg shadow-xl p-3 min-w-[160px]">
+            <p className="text-[8px] font-bold uppercase tracking-[0.15em] text-white/40 mb-2">Légende D</p>
+            <div className="space-y-1">
+              {rightLegend.map((item, i) => (
+                <div key={i} className="flex items-center gap-2">
+                  <span className="w-3 h-3 rounded-sm shrink-0 border border-white/10" style={{ backgroundColor: item.color }} />
+                  <span className="text-[10px] text-white/70 leading-none">{getLegendLabel(item)}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Compare picker modal */}
+        {showComparePicker && (
+          <div className="absolute inset-0 z-[2000] flex items-center justify-center bg-black/50" onClick={() => setShowComparePicker(false)}>
+            <div className="bg-umbrella-dark/95 backdrop-blur-xl rounded-2xl shadow-2xl border border-white/10 p-6 w-full max-w-md mx-4" onClick={e => e.stopPropagation()}>
+              <h3 className="text-lg font-serif text-white mb-6">Comparer deux couches</h3>
+              <div className="mb-5">
+                <label className="block text-[10px] font-bold uppercase tracking-[0.2em] text-white/40 mb-2">Couche gauche</label>
+                <select
+                  value={leftLayerId ?? ''}
+                  onChange={e => setLeftLayerId(e.target.value ? Number(e.target.value) : null)}
+                  className="w-full bg-white/5 text-white text-sm rounded-lg px-3 py-2 border border-white/10 focus:outline-none focus:ring-2 focus:ring-umbrella-accent/40 cursor-pointer appearance-none"
+                >
+                  <option value="" className="bg-umbrella-dark text-white">Choisir…</option>
+                  {flattenLayersWithPath(groups, ungroupedLayers).map(({ layer, path }) => (
+                    <option key={layer.id} value={layer.id} className="bg-umbrella-dark text-white">{path} › {layer.name}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="mb-5">
+                <label className="block text-[10px] font-bold uppercase tracking-[0.2em] text-white/40 mb-2">Couche droite</label>
+                <select
+                  value={rightLayerId ?? ''}
+                  onChange={e => setRightLayerId(e.target.value ? Number(e.target.value) : null)}
+                  className="w-full bg-white/5 text-white text-sm rounded-lg px-3 py-2 border border-white/10 focus:outline-none focus:ring-2 focus:ring-umbrella-accent/40 cursor-pointer appearance-none"
+                >
+                  <option value="" className="bg-umbrella-dark text-white">Choisir…</option>
+                  {flattenLayersWithPath(groups, ungroupedLayers).map(({ layer, path }) => (
+                    <option key={layer.id} value={layer.id} className="bg-umbrella-dark text-white">{path} › {layer.name}</option>
+                  ))}
+                </select>
+              </div>
+              {leftLayerId && rightLayerId && leftLayerId === rightLayerId && (
+                <p className="text-sm text-red-400 mb-4">Veuillez choisir deux couches différentes</p>
+              )}
+              <div className="flex gap-3">
+                <button
+                  onClick={startCompare}
+                  disabled={!leftLayerId || !rightLayerId || leftLayerId === rightLayerId}
+                  className="flex-1 bg-umbrella-accent text-white text-sm font-medium py-2.5 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition"
+                >
+                  Comparer
+                </button>
+                <button
+                  onClick={() => { setShowComparePicker(false); setLeftLayerId(null); setRightLayerId(null); }}
+                  className="flex-1 bg-white/5 hover:bg-white/10 text-white text-sm font-medium py-2.5 rounded-lg transition"
+                >
+                  Annuler
+                </button>
+              </div>
+            </div>
           </div>
         )}
 

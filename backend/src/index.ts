@@ -42,6 +42,23 @@ app.use('/api/chat', chatRoutes);
 app.use('/api/layers', layerRoutes);
 app.use('/api/groups', groupRoutes);
 app.use('/api/clip', clipRoutes);
+// ─── Static file serving for clipped rasters (TIFF downloads) ───────────
+// Clip-service writes .tif files to CLIP_OUTPUT_DIR (default /data/clipped-rasters).
+// The /api/clip/country endpoint returns downloadUrl: /files/{layerName}/{fileId}.tif
+// which is served here. Helmet's crossOriginResourcePolicy would block image/tiff
+// fetches from a different origin, so we relax it for this route.
+app.use(
+  '/files',
+  (_req: express.Request, res: express.Response, next: express.NextFunction) => {
+    res.removeHeader('Cross-Origin-Resource-Policy');
+    next();
+  },
+  express.static(process.env.CLIP_OUTPUT_DIR || '/data/clipped-rasters', {
+    fallthrough: true,
+    setHeaders: (res) => res.removeHeader('Cross-Origin-Resource-Policy'),
+  })
+);
+
 // ─── Health Check ───────────────────────────────────────────────────────
 app.get('/api/health', (_req, res) => {
   res.json({
