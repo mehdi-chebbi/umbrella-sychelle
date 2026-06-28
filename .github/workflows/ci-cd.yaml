@@ -57,7 +57,7 @@ jobs:
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: http://sonarqube.sonarqube.svc.cluster.local:9000
-          SONAR_SCANNER_OPTS: "-Xmx512m"
+          SONAR_SCANNER_OPTS: "-Xmx2048m"
 
       - name: SonarQube quality gate
         uses: sonarsource/sonarqube-quality-gate-action@master
@@ -87,7 +87,7 @@ jobs:
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: http://sonarqube.sonarqube.svc.cluster.local:9000
-          SONAR_SCANNER_OPTS: "-Xmx512m"
+          SONAR_SCANNER_OPTS: "-Xmx2048m"
 
       - name: SonarQube quality gate
         uses: sonarsource/sonarqube-quality-gate-action@master
