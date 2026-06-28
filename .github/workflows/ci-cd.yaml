@@ -55,14 +55,13 @@ jobs:
           apt-get update -qq && apt-get install -y -qq unzip wget curl nodejs default-jre-headless
 
       - name: SonarQube scan
-        uses: sonarsource/sonarqube-scan-action@master
+        uses: SonarSource/sonarqube-scan-action@fd88b7d7ccbaefd23d8f36f73b59db7a3d246602 # v6.0.0
         timeout-minutes: 10
         with:
           projectBaseDir: frontend
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_HOST_URL: http://sonarqube.sonarqube.svc.cluster.local:9000
-          SONAR_SCANNER_JAVA_OPTS: "-Xmx2048m"
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
 
       - name: SonarQube quality gate
         uses: sonarsource/sonarqube-quality-gate-action@master
@@ -90,14 +89,13 @@ jobs:
           apt-get update -qq && apt-get install -y -qq unzip wget curl nodejs default-jre-headless
 
       - name: SonarQube scan
-        uses: sonarsource/sonarqube-scan-action@master
+        uses: SonarSource/sonarqube-scan-action@fd88b7d7ccbaefd23d8f36f73b59db7a3d246602 # v6.0.0
         timeout-minutes: 10
         with:
           projectBaseDir: backend
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_HOST_URL: http://sonarqube.sonarqube.svc.cluster.local:9000
-          SONAR_SCANNER_JAVA_OPTS: "-Xmx2048m"
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
 
       - name: SonarQube quality gate
         uses: sonarsource/sonarqube-quality-gate-action@master
