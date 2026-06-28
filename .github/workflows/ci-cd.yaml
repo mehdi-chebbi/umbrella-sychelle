@@ -65,8 +65,6 @@ jobs:
         timeout-minutes: 10
         with:
           projectBaseDir: frontend
-          args: >
-            -Dsonar.javascript.node.path=$(which node)
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
@@ -108,8 +106,6 @@ jobs:
         timeout-minutes: 10
         with:
           projectBaseDir: backend
-          args: >
-            -Dsonar.javascript.node.path=$(which node)
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
