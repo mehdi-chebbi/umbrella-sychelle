@@ -54,14 +54,23 @@ jobs:
         run: |
           apt-get update -qq && apt-get install -y -qq unzip wget curl nodejs default-jre-headless
 
+      - name: Set Node path for SonarQube
+        run: |
+          NODE_PATH=$(which node)
+          echo "sonar.javascript.node.path=$NODE_PATH" >> frontend/sonar-project.properties
+          echo "sonar.javascript.node.path=$NODE_PATH" >> backend/sonar-project.properties
+
       - name: SonarQube scan
         uses: SonarSource/sonarqube-scan-action@fd88b7d7ccbaefd23d8f36f73b59db7a3d246602 # v6.0.0
         timeout-minutes: 10
         with:
           projectBaseDir: frontend
+          args: >
+            -Dsonar.javascript.node.path=$(which node)
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+          SONAR_SCANNER_JAVA_OPTS: -Xmx2048m
 
       - name: SonarQube quality gate
         uses: sonarsource/sonarqube-quality-gate-action@master
@@ -88,14 +97,23 @@ jobs:
         run: |
           apt-get update -qq && apt-get install -y -qq unzip wget curl nodejs default-jre-headless
 
+      - name: Set Node path for SonarQube
+        run: |
+          NODE_PATH=$(which node)
+          echo "sonar.javascript.node.path=$NODE_PATH" >> frontend/sonar-project.properties
+          echo "sonar.javascript.node.path=$NODE_PATH" >> backend/sonar-project.properties
+
       - name: SonarQube scan
         uses: SonarSource/sonarqube-scan-action@fd88b7d7ccbaefd23d8f36f73b59db7a3d246602 # v6.0.0
         timeout-minutes: 10
         with:
           projectBaseDir: backend
+          args: >
+            -Dsonar.javascript.node.path=$(which node)
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+          SONAR_SCANNER_JAVA_OPTS: -Xmx2048m
 
       - name: SonarQube quality gate
         uses: sonarsource/sonarqube-quality-gate-action@master
