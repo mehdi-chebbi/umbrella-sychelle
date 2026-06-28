@@ -50,6 +50,10 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Install scanner dependencies
+        run: |
+          apt-get update -qq && apt-get install -y -qq unzip wget curl nodejs default-jre-headless
+
       - name: SonarQube scan
         uses: sonarsource/sonarqube-scan-action@master
         with:
@@ -57,7 +61,7 @@ jobs:
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: http://sonarqube.sonarqube.svc.cluster.local:9000
-          SONAR_SCANNER_OPTS: "-Xmx2048m"
+          SONAR_SCANNER_JAVA_OPTS: "-Xmx2048m"
 
       - name: SonarQube quality gate
         uses: sonarsource/sonarqube-quality-gate-action@master
@@ -80,6 +84,10 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Install scanner dependencies
+        run: |
+          apt-get update -qq && apt-get install -y -qq unzip wget curl nodejs default-jre-headless
+
       - name: SonarQube scan
         uses: sonarsource/sonarqube-scan-action@master
         with:
@@ -87,7 +95,7 @@ jobs:
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: http://sonarqube.sonarqube.svc.cluster.local:9000
-          SONAR_SCANNER_OPTS: "-Xmx2048m"
+          SONAR_SCANNER_JAVA_OPTS: "-Xmx2048m"
 
       - name: SonarQube quality gate
         uses: sonarsource/sonarqube-quality-gate-action@master
