@@ -1,0 +1,360 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  REGISTRY: ghcr.io
+  OWNER: mehdi-chebbi          # your GitHub username (lowercase)
+  FRONTEND_IMAGE: ghcr.io/mehdi-chebbi/umbrella-sychelle-frontend
+  BACKEND_IMAGE: ghcr.io/mehdi-chebbi/umbrella-sychelle-backend
+
+jobs:
+  # -----------------------------------------------
+  # Detect which service changed
+  # -----------------------------------------------
+  changes:
+    name: Detect Changes
+    runs-on: self-hosted
+    outputs:
+      frontend: ${{ steps.filter.outputs.frontend }}
+      backend: ${{ steps.filter.outputs.backend }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Detect changed paths
+        uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            frontend:
+              - 'frontend/**'
+            backend:
+              - 'backend/**'
+
+  # -----------------------------------------------
+  # SonarQube — Frontend
+  # -----------------------------------------------
+  sonar-frontend:
+    name: SonarQube (Frontend)
+    runs-on: self-hosted
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: SonarQube scan
+        uses: sonarsource/sonarqube-scan-action@master
+        with:
+          projectBaseDir: frontend
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: http://sonarqube.sonarqube.svc.cluster.local:9000
+
+      - name: SonarQube quality gate
+        uses: sonarsource/sonarqube-quality-gate-action@master
+        timeout-minutes: 5
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: http://sonarqube.sonarqube.svc.cluster.local:9000
+
+  # -----------------------------------------------
+  # SonarQube — Backend
+  # -----------------------------------------------
+  sonar-backend:
+    name: SonarQube (Backend)
+    runs-on: self-hosted
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: SonarQube scan
+        uses: sonarsource/sonarqube-scan-action@master
+        with:
+          projectBaseDir: backend
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: http://sonarqube.sonarqube.svc.cluster.local:9000
+
+      - name: SonarQube quality gate
+        uses: sonarsource/sonarqube-quality-gate-action@master
+        timeout-minutes: 5
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: http://sonarqube.sonarqube.svc.cluster.local:9000
+
+  # -----------------------------------------------
+  # Build & Push — Frontend (Kaniko)
+  # -----------------------------------------------
+  build-frontend:
+    name: Build & Push Frontend
+    runs-on: self-hosted
+    needs: sonar-frontend
+    if: needs.changes.outputs.frontend == 'true'
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Create GHCR auth for Kaniko
+        run: |
+          kubectl create secret generic kaniko-ghcr-secret \
+            --from-literal=config.json="{\"auths\":{\"ghcr.io\":{\"auth\":\"$(echo -n "${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}" | base64)\"}}}" \
+            --namespace=umbrella \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Build and push via Kaniko
+        run: |
+          IMAGE="${{ env.FRONTEND_IMAGE }}:sha-${{ github.sha }}"
+          kubectl run kaniko-frontend-${{ github.run_id }} \
+            --image=gcr.io/kaniko-project/executor:latest \
+            --restart=Never \
+            --namespace=umbrella \
+            --overrides="{
+              \"spec\": {
+                \"containers\": [{
+                  \"name\": \"kaniko\",
+                  \"image\": \"gcr.io/kaniko-project/executor:latest\",
+                  \"args\": [
+                    \"--context=dir:///workspace\",
+                    \"--dockerfile=/workspace/frontend/Dockerfile\",
+                    \"--destination=${IMAGE}\",
+                    \"--destination=${{ env.FRONTEND_IMAGE }}:latest\",
+                    \"--cache=true\"
+                  ],
+                  \"volumeMounts\": [
+                    {\"name\": \"workspace\", \"mountPath\": \"/workspace\"},
+                    {\"name\": \"kaniko-secret\", \"mountPath\": \"/kaniko/.docker\"}
+                  ]
+                }],
+                \"initContainers\": [{
+                  \"name\": \"copy-source\",
+                  \"image\": \"busybox\",
+                  \"command\": [\"cp\", \"-r\", \"/src/.\", \"/workspace/\"],
+                  \"volumeMounts\": [
+                    {\"name\": \"source\", \"mountPath\": \"/src\"},
+                    {\"name\": \"workspace\", \"mountPath\": \"/workspace\"}
+                  ]
+                }],
+                \"volumes\": [
+                  {\"name\": \"workspace\", \"emptyDir\": {}},
+                  {\"name\": \"source\", \"hostPath\": {\"path\": \"${{ github.workspace }}\"}},
+                  {\"name\": \"kaniko-secret\", \"secret\": {\"secretName\": \"kaniko-ghcr-secret\"}}
+                ],
+                \"restartPolicy\": \"Never\"
+              }
+            }"
+
+          kubectl wait pod/kaniko-frontend-${{ github.run_id }} \
+            --for=jsonpath='{.status.phase}'=Succeeded \
+            --timeout=10m -n umbrella
+
+          kubectl delete pod kaniko-frontend-${{ github.run_id }} -n umbrella
+
+  # -----------------------------------------------
+  # Build & Push — Backend (Kaniko)
+  # -----------------------------------------------
+  build-backend:
+    name: Build & Push Backend
+    runs-on: self-hosted
+    needs: sonar-backend
+    if: needs.changes.outputs.backend == 'true'
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Create GHCR auth for Kaniko
+        run: |
+          kubectl create secret generic kaniko-ghcr-secret \
+            --from-literal=config.json="{\"auths\":{\"ghcr.io\":{\"auth\":\"$(echo -n "${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}" | base64)\"}}}" \
+            --namespace=umbrella \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Build and push via Kaniko
+        run: |
+          IMAGE="${{ env.BACKEND_IMAGE }}:sha-${{ github.sha }}"
+          kubectl run kaniko-backend-${{ github.run_id }} \
+            --image=gcr.io/kaniko-project/executor:latest \
+            --restart=Never \
+            --namespace=umbrella \
+            --overrides="{
+              \"spec\": {
+                \"containers\": [{
+                  \"name\": \"kaniko\",
+                  \"image\": \"gcr.io/kaniko-project/executor:latest\",
+                  \"args\": [
+                    \"--context=dir:///workspace\",
+                    \"--dockerfile=/workspace/backend/Dockerfile\",
+                    \"--destination=${IMAGE}\",
+                    \"--destination=${{ env.BACKEND_IMAGE }}:latest\",
+                    \"--cache=true\"
+                  ],
+                  \"volumeMounts\": [
+                    {\"name\": \"workspace\", \"mountPath\": \"/workspace\"},
+                    {\"name\": \"kaniko-secret\", \"mountPath\": \"/kaniko/.docker\"}
+                  ]
+                }],
+                \"initContainers\": [{
+                  \"name\": \"copy-source\",
+                  \"image\": \"busybox\",
+                  \"command\": [\"cp\", \"-r\", \"/src/.\", \"/workspace/\"],
+                  \"volumeMounts\": [
+                    {\"name\": \"source\", \"mountPath\": \"/src\"},
+                    {\"name\": \"workspace\", \"mountPath\": \"/workspace\"}
+                  ]
+                }],
+                \"volumes\": [
+                  {\"name\": \"workspace\", \"emptyDir\": {}},
+                  {\"name\": \"source\", \"hostPath\": {\"path\": \"${{ github.workspace }}\"}},
+                  {\"name\": \"kaniko-secret\", \"secret\": {\"secretName\": \"kaniko-ghcr-secret\"}}
+                ],
+                \"restartPolicy\": \"Never\"
+              }
+            }"
+
+          kubectl wait pod/kaniko-backend-${{ github.run_id }} \
+            --for=jsonpath='{.status.phase}'=Succeeded \
+            --timeout=10m -n umbrella
+
+          kubectl delete pod kaniko-backend-${{ github.run_id }} -n umbrella
+
+  # -----------------------------------------------
+  # Trivy — Frontend
+  # -----------------------------------------------
+  trivy-frontend:
+    name: Trivy Scan (Frontend)
+    runs-on: self-hosted
+    needs: build-frontend
+    if: needs.changes.outputs.frontend == 'true'
+    steps:
+      - name: Scan frontend image
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: "${{ env.FRONTEND_IMAGE }}:sha-${{ github.sha }}"
+          format: table
+          exit-code: "1"
+          severity: CRITICAL
+          ignore-unfixed: true
+        env:
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+
+  # -----------------------------------------------
+  # Trivy — Backend
+  # -----------------------------------------------
+  trivy-backend:
+    name: Trivy Scan (Backend)
+    runs-on: self-hosted
+    needs: build-backend
+    if: needs.changes.outputs.backend == 'true'
+    steps:
+      - name: Scan backend image
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: "${{ env.BACKEND_IMAGE }}:sha-${{ github.sha }}"
+          format: table
+          exit-code: "1"
+          severity: CRITICAL
+          ignore-unfixed: true
+        env:
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+
+  # -----------------------------------------------
+  # Deploy — Frontend
+  # -----------------------------------------------
+  deploy-frontend:
+    name: Deploy Frontend
+    runs-on: self-hosted
+    needs: trivy-frontend
+    if: github.ref == 'refs/heads/main' && needs.changes.outputs.frontend == 'true'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Update image and deploy
+        run: |
+          IMAGE="${{ env.FRONTEND_IMAGE }}:sha-${{ github.sha }}"
+          sed -i "s|image:.*umb-front.*|image: ${IMAGE}|g" k8s/front.yaml
+          kubectl apply -f k8s/front.yaml -n umbrella
+          kubectl rollout status deployment/frontend -n umbrella --timeout=5m
+
+  # -----------------------------------------------
+  # Deploy — Backend
+  # -----------------------------------------------
+  deploy-backend:
+    name: Deploy Backend
+    runs-on: self-hosted
+    needs: trivy-backend
+    if: github.ref == 'refs/heads/main' && needs.changes.outputs.backend == 'true'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Update image and deploy
+        run: |
+          IMAGE="${{ env.BACKEND_IMAGE }}:sha-${{ github.sha }}"
+          sed -i "s|image:.*umb-back.*|image: ${IMAGE}|g" k8s/back.yaml
+          kubectl apply -f k8s/back.yaml -n umbrella
+          kubectl rollout status deployment/backend -n umbrella --timeout=5m
+
+  # -----------------------------------------------
+  # Notifications
+  # -----------------------------------------------
+  notify-failure:
+    name: Notify on Failure
+    runs-on: self-hosted
+    needs: [sonar-frontend, sonar-backend, build-frontend, build-backend, trivy-frontend, trivy-backend, deploy-frontend, deploy-backend]
+    if: failure()
+    steps:
+      - name: Send failure email
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 587
+          username: ${{ secrets.MAIL_USERNAME }}
+          password: ${{ secrets.MAIL_PASSWORD }}
+          subject: "❌ Pipeline FAILED — umbrella-sychelle (${{ github.ref_name }})"
+          to: ${{ secrets.MAIL_USERNAME }}
+          from: ci-bot@umbrella
+          body: |
+            Pipeline failed for commit ${{ github.sha }} by ${{ github.actor }}.
+            Branch: ${{ github.ref_name }}
+            Details: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+  notify-success:
+    name: Notify on Success
+    runs-on: self-hosted
+    needs: [deploy-frontend, deploy-backend]
+    if: success()
+    steps:
+      - name: Send success email
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 587
+          username: ${{ secrets.MAIL_USERNAME }}
+          password: ${{ secrets.MAIL_PASSWORD }}
+          subject: "✅ Deployed — umbrella-sychelle (${{ github.ref_name }})"
+          to: ${{ secrets.MAIL_USERNAME }}
+          from: ci-bot@umbrella
+          body: |
+            Deployment successful for commit ${{ github.sha }} by ${{ github.actor }}.
+            Frontend: ${{ env.FRONTEND_IMAGE }}:sha-${{ github.sha }}
+            Backend:  ${{ env.BACKEND_IMAGE }}:sha-${{ github.sha }}

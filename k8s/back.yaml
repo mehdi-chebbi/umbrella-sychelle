@@ -16,7 +16,7 @@ spec:
     spec:
       containers:
         - name: backend
-          image: mehdino123/umb-back:latest
+          image: ghcr.io/mehdi-chebbi/umbrella-sychelle-backend:latest  # pipeline replaces this with sha tag
           ports:
             - containerPort: 4000
           envFrom:
@@ -36,7 +36,8 @@ spec:
             initialDelaySeconds: 10
             periodSeconds: 10
             failureThreshold: 3
-
+      imagePullSecrets:
+        - name: ghcr-secret     # pulls from GHCR
 ---
 apiVersion: v1
 kind: Service
